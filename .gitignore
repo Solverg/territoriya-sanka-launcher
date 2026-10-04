@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 launcher.config.json
 *.log
+MODLOG.md
+design-qa.md
 
 # Local updater cache; never publish downloaded releases or helpers.
 .updates/

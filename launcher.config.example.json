@@ -1,0 +1,9 @@
+{
+  "game_dir": "",
+  "mod_build_dir": "",
+  "update": {
+    "github_repository": "Solverg/territoriya-sanka-launcher",
+    "asset_name": "territoriya-sanka-launcher.zip",
+    "checksum_asset": "SHA256SUMS.txt"
+  }
+}
