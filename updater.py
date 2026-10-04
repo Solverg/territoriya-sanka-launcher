@@ -1,9 +1,9 @@
 """GitHub Releases update support for the local launcher only.
 
-The updater never accesses the Arma 3 directory or the mod build.  A release is
+The updater never accesses the Arma 3 directory or the mod build. A release is
 first downloaded to the user's local application-data folder and checked against
-the SHA-256 value published with that same release.  Replacing launcher files is
-left to an explicit ``/api/update/install`` request from the local UI.
+the SHA-256 value published with that same release. Replacing launcher files is
+performed only after those checks succeed.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 GITHUB_API = "https://api.github.com"
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -61,15 +61,26 @@ def is_newer(candidate: str, current: str) -> bool:
     return candidate_key + (0,) * (width - len(candidate_key)) > current_key + (0,) * (width - len(current_key))
 
 
-def _request(url: str) -> bytes:
+def _request(url: str, on_progress: Callable[[float], None] | None = None) -> bytes:
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Territory-Sanyok-Launcher"})
     with urllib.request.urlopen(request, timeout=12) as response:
-        if response.length is not None and response.length > MAX_DOWNLOAD_BYTES:
+        content_length = response.length
+        if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
             raise ValueError("Файл обновления слишком большой.")
-        payload = response.read(MAX_DOWNLOAD_BYTES + 1)
-    if len(payload) > MAX_DOWNLOAD_BYTES:
-        raise ValueError("Файл обновления слишком большой.")
-    return payload
+        if on_progress:
+            on_progress(0.0)
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := response.read(64 * 1024):
+            total += len(chunk)
+            if total > MAX_DOWNLOAD_BYTES:
+                raise ValueError("Файл обновления слишком большой.")
+            chunks.append(chunk)
+            if on_progress and content_length:
+                on_progress(min(total / content_length, 1.0))
+    if on_progress:
+        on_progress(1.0)
+    return b"".join(chunks)
 
 
 def _release(settings: UpdateSettings) -> tuple[dict[str, Any] | None, str | None]:
@@ -81,7 +92,11 @@ def _release(settings: UpdateSettings) -> tuple[dict[str, Any] | None, str | Non
         if not isinstance(release, dict):
             raise ValueError("GitHub вернул некорректный ответ.")
         return release, None
-    except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as error:
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None, "В GitHub Releases пока нет опубликованной версии."
+        return None, f"Не удалось проверить GitHub Releases: {error}."
+    except (OSError, ValueError, urllib.error.URLError) as error:
         return None, f"Не удалось проверить GitHub Releases: {error}."
 
 
@@ -122,7 +137,17 @@ def _expected_checksum(checksums: bytes, archive_name: str) -> str:
     raise ValueError(f"В SHA256SUMS.txt нет контрольной суммы для {archive_name}.")
 
 
-def stage_update(settings: UpdateSettings, current_version: str, updates_dir: Path) -> dict[str, Any]:
+def stage_update(
+    settings: UpdateSettings,
+    current_version: str,
+    updates_dir: Path,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> dict[str, Any]:
+    def progress(value: int, message: str) -> None:
+        if on_progress:
+            on_progress(value, message)
+
+    progress(8, "Проверяем сведения о новой версии…")
     checked = check_for_update(settings, current_version)
     if not checked.get("available"):
         return checked
@@ -130,18 +155,26 @@ def stage_update(settings: UpdateSettings, current_version: str, updates_dir: Pa
     if error or release is None:
         return {**checked, "message": error or "Не удалось получить сведения о релизе."}
     try:
-        archive = _request(_asset_url(release, settings.asset_name))
+        progress(12, "Скачиваем обновление…")
+        archive = _request(
+            _asset_url(release, settings.asset_name),
+            lambda fraction: progress(12 + int(fraction * 76), f"Скачиваем обновление… {int(fraction * 100)}%"),
+        )
+        progress(89, "Загружаем контрольную сумму…")
         expected = _expected_checksum(_request(_asset_url(release, settings.checksum_asset)), settings.asset_name)
+        progress(93, "Проверяем контрольную сумму…")
         actual = hashlib.sha256(archive).hexdigest()
         if actual != expected:
             raise ValueError("Контрольная сумма ZIP-архива не совпала.")
+        progress(96, "Готовим проверенное обновление…")
         version = str(checked["latest_version"]).lstrip("v")
         destination = updates_dir / version
         destination.mkdir(parents=True, exist_ok=True)
         archive_path = destination / settings.asset_name
         archive_path.write_bytes(archive)
         (destination / "update.json").write_text(json.dumps({"archive": settings.asset_name, "version": checked["latest_version"], "sha256": actual}, ensure_ascii=False), encoding="utf-8")
-        return {**checked, "staged": True, "message": "Обновление проверено и подготовлено. Подтвердите установку и перезапуск."}
+        progress(97, "Обновление проверено и готово к установке.")
+        return {**checked, "staged": True, "message": "Обновление проверено и готово к установке."}
     except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as error:
         return {**checked, "staged": False, "message": f"Не удалось подготовить обновление: {error}."}
 
@@ -189,3 +222,4 @@ def apply_staged_update(updates_dir: Path) -> Path:
         return destination
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
+

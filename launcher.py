@@ -27,8 +27,27 @@ APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "sha
 LOCATION_CACHE_FILE = APP_DATA_DIR / "game-location.json"
 UPDATES_DIR = APP_DATA_DIR / "updates"
 SUPPORTED_GAME_VERSION = "1.94"
-LAUNCHER_VERSION = "0.1.0"
+LAUNCHER_VERSION = "1.0.2"
 HOST, PORT = "127.0.0.1", 8765
+
+UPDATE_LOCK = threading.Lock()
+UPDATE_STATE: dict[str, Any] = {
+    "phase": "idle",
+    "progress": 0,
+    "message": "Проверяем обновления лаунчера…",
+    "blocking": True,
+}
+
+
+def update_status() -> dict[str, Any]:
+    with UPDATE_LOCK:
+        return dict(UPDATE_STATE)
+
+
+def set_update_status(**changes: Any) -> dict[str, Any]:
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(changes)
+        return dict(UPDATE_STATE)
 
 
 def load_config() -> dict[str, Any]:
@@ -251,32 +270,14 @@ class LauncherHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/status":
             self.send_json(status())
             return
+        if self.path == "/api/update/status":
+            self.send_json(update_status())
+            return
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/update/check":
-            self.send_json(check_for_update(read_settings(load_config()), LAUNCHER_VERSION))
-            return
-        if self.path == "/api/update/download":
-            result = stage_update(read_settings(load_config()), LAUNCHER_VERSION, UPDATES_DIR)
-            self.send_json(result, HTTPStatus.OK if result.get("staged") else HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/api/update/install":
-            try:
-                pending = apply_staged_update(UPDATES_DIR)
-                helper = APP_DATA_DIR / "install-pending-update.cmd"
-                restart_script = HERE / "run-launcher.cmd"
-                helper.write_text(
-                    "@echo off\r\nsetlocal\r\ntimeout /t 2 /nobreak >nul\r\n"
-                    f'robocopy "{pending}" "{HERE}" /E /R:1 /W:1 /XD node_modules .git /XF launcher.config.json MODLOG.md\r\n'
-                    f'start "" "{restart_script}"\r\n',
-                    encoding="utf-8",
-                )
-                subprocess.Popen(["cmd", "/c", str(helper)], creationflags=subprocess.CREATE_NO_WINDOW)
-                self.send_json({"message": "Обновление устанавливается. Лаунчер перезапустится через несколько секунд."})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                self.send_json({"message": f"Не удалось установить обновление: {error}."}, HTTPStatus.BAD_REQUEST)
+        if self.path == "/api/update/start":
+            self.send_json(start_forced_update(self.server))
             return
         if self.path == "/api/game-path":
             try:
@@ -319,6 +320,63 @@ class LauncherHandler(SimpleHTTPRequestHandler):
         self.send_json({"message": f"Arma 3 запущена (PID {process.pid}) с «Территория Санька: Королевская Битва»."})
 
 
+def begin_replacement() -> None:
+    """Start the short-lived Windows helper after all update checks succeeded."""
+    pending = apply_staged_update(UPDATES_DIR)
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    helper = APP_DATA_DIR / "install-pending-update.cmd"
+    restart_script = HERE / "run-launcher.cmd"
+    helper.write_text(
+        "@echo off\r\nsetlocal\r\ntimeout /t 2 /nobreak >nul\r\n"
+        f'robocopy "{pending}" "{HERE}" /E /R:1 /W:1 /XD node_modules .git /XF launcher.config.json MODLOG.md\r\n'
+        f'start "" "{restart_script}"\r\n',
+        encoding="utf-8",
+    )
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    subprocess.Popen(["cmd", "/c", str(helper)], creationflags=creationflags)
+
+
+def start_forced_update(server: ThreadingHTTPServer) -> dict[str, Any]:
+    """Check, verify, install, and restart automatically once per process."""
+    with UPDATE_LOCK:
+        if UPDATE_STATE["phase"] != "idle":
+            return dict(UPDATE_STATE)
+        UPDATE_STATE.update(phase="checking", progress=3, message="Проверяем обновления лаунчера…", blocking=True)
+
+    def run() -> None:
+        settings = read_settings(load_config())
+        checked = check_for_update(settings, LAUNCHER_VERSION)
+        if not checked.get("enabled"):
+            set_update_status(phase="disabled", progress=100, message=checked["message"], blocking=False)
+            return
+        if not checked.get("available"):
+            set_update_status(
+                phase="up_to_date", progress=100, message=checked["message"], blocking=False,
+                current_version=checked.get("current_version"), latest_version=checked.get("latest_version"),
+            )
+            return
+
+        set_update_status(phase="downloading", progress=8, message="Готовим обновление…", blocking=True, latest_version=checked.get("latest_version"))
+
+        def progress(value: int, message: str) -> None:
+            set_update_status(phase="downloading", progress=value, message=message, blocking=True)
+
+        staged = stage_update(settings, LAUNCHER_VERSION, UPDATES_DIR, progress)
+        if not staged.get("staged"):
+            set_update_status(phase="failed", progress=100, message=staged.get("message", "Не удалось подготовить обновление."), blocking=False)
+            return
+        try:
+            set_update_status(phase="installing", progress=98, message="Устанавливаем обновление…", blocking=True)
+            begin_replacement()
+            set_update_status(phase="restarting", progress=100, message="Обновление установлено. Перезапускаем лаунчер…", blocking=True)
+            threading.Timer(0.45, server.shutdown).start()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            set_update_status(phase="failed", progress=100, message=f"Не удалось установить обновление: {error}.", blocking=False)
+
+    threading.Thread(target=run, daemon=True, name="launcher-forced-update").start()
+    return update_status()
+
+
 def main() -> int:
     no_browser = "--no-browser" in sys.argv[1:]
     if not (HERE / "dist" / "client" / "index.html").is_file():
@@ -330,6 +388,7 @@ def main() -> int:
     print(f"Лаунчер доступен по адресу {url}")
     if not no_browser:
         webbrowser.open(url)
+    start_forced_update(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -341,3 +400,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

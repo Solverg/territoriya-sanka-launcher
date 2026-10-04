@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faArrowsRotate, faCheck, faCircleInfo, faDownload, faFolderOpen, faGamepad, faMap, faPlay, faPuzzlePiece, faSatelliteDish, faTriangleExclamation, faVolumeHigh, faVolumeXmark } from "@fortawesome/free-solid-svg-icons";
+import { faCheck, faCircleInfo, faFolderOpen, faGamepad, faMap, faPlay, faPuzzlePiece, faSatelliteDish, faTriangleExclamation, faVolumeHigh, faVolumeXmark } from "@fortawesome/free-solid-svg-icons";
 
 const launcherName = "Территория Санька: Королевская Битва";
-const fallback = { game: { name: "Arma 3 1.94", exists: false }, mods: [{ name: "Contact Fuse Drone", description: "Квадрокоптеры с контактным зарядом для всех фракций", exists: false }], maps: [], launcher: { name: launcherName, version: "0.1.0" } };
+const fallback = { game: { name: "Arma 3 1.94", exists: false }, mods: [{ name: "Contact Fuse Drone", description: "Квадрокоптеры с контактным зарядом для всех фракций", exists: false }], maps: [], launcher: { name: launcherName, version: "1.0.2" } };
 
 function PanelTitle({ icon, children, detail }) {
   return <div className="panel-title"><FontAwesomeIcon icon={icon} aria-hidden="true" /><h2>{children}</h2>{detail ? <span>{detail}</span> : null}</div>;
@@ -16,13 +16,21 @@ export function App() {
   const [gameDir, setGameDir] = useState("");
   const [savingPath, setSavingPath] = useState(false);
   const [soundMuted, setSoundMuted] = useState(false);
-  const [update, setUpdate] = useState(null);
-  const [updating, setUpdating] = useState(false);
+  const [update, setUpdate] = useState({ phase: "checking", progress: 0, message: "Проверяем обновления лаунчера…", blocking: true });
   const soundtrack = useRef(null);
   useEffect(() => {
-    fetch("/api/status").then((response) => response.ok ? response.json() : Promise.reject()).then((payload) => {
+    let active = true;
+    const loadStatus = () => fetch("/api/status").then((response) => response.ok ? response.json() : Promise.reject()).then((payload) => {
+      if (!active) return;
       setState(payload); setNotice(payload.ready ? "Готово к запуску в одиночной игре или LAN." : "Проверьте путь к игре или сборку мода.");
-    }).catch(() => setNotice("Предпросмотр активен. Для запуска игры откройте launcher.py."));
+    }).catch(() => active && setNotice("Предпросмотр активен. Для запуска игры откройте launcher.py."));
+    const loadUpdate = () => fetch("/api/update/status").then((response) => response.ok ? response.json() : Promise.reject()).then((payload) => {
+      if (active) setUpdate(payload);
+    }).catch(() => active && setUpdate({ phase: "preview", progress: 0, message: "Автопроверка доступна в локальном лаунчере.", blocking: false }));
+    loadStatus();
+    loadUpdate();
+    const timer = window.setInterval(loadUpdate, 350);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
   useEffect(() => {
     const audio = soundtrack.current;
@@ -48,15 +56,6 @@ export function App() {
       setNotice(payload.message);
     } catch (error) { setNotice(error.message || "Не удалось связаться с локальным лаунчером."); }
     finally { setLaunching(false); }
-  }
-  async function requestUpdate(action) {
-    setUpdating(true);
-    try {
-      const response = await fetch(`/api/update/${action}`, { method: "POST" });
-      const payload = await response.json();
-      setUpdate(payload); setNotice(payload.message || "Статус обновления получен.");
-    } catch (error) { setNotice("Не удалось связаться с модулем обновления."); }
-    finally { setUpdating(false); }
   }
   async function saveGamePath(event) {
     event.preventDefault();
@@ -90,7 +89,8 @@ export function App() {
       </section>
       <section className="panel maps-panel" aria-label="Карты"><PanelTitle icon={faMap} detail="(0)">Карты</PanelTitle><div className="empty-maps"><FontAwesomeIcon icon={faMap} aria-hidden="true" /><strong>Карты пока не подключены</strong><span>Поле намеренно оставлено пустым.</span></div></section>
     </div>
-    <section className="update-area" aria-label="Обновления лаунчера"><div><strong>Обновления лаунчера</strong><span>{update?.latest_version ? `Версия ${update.latest_version}` : `Текущая версия ${state.launcher?.version || fallback.launcher.version}`}</span></div><div className="update-actions"><button type="button" onClick={() => requestUpdate("check")} disabled={updating}><FontAwesomeIcon icon={faArrowsRotate} aria-hidden="true" />{updating ? "Проверяем…" : "Проверить"}</button>{update?.available && !update?.staged ? <button type="button" onClick={() => requestUpdate("download")} disabled={updating}><FontAwesomeIcon icon={faDownload} aria-hidden="true" />Подготовить</button> : null}{update?.staged ? <button type="button" className="install-update" onClick={() => requestUpdate("install")} disabled={updating}><FontAwesomeIcon icon={faDownload} aria-hidden="true" />Установить и перезапустить</button> : null}</div></section>
-    <footer className="launch-area"><p className="launch-status" role="status">{notice}</p><button className="launch-button" onClick={launchGame} disabled={launching || !state.ready}><FontAwesomeIcon icon={faPlay} aria-hidden="true" /><span>{launching ? "Запуск…" : "Играть"}</span></button><p className="launch-note">{gameFound ? `${state.game.name} · -world=empty` : "Укажите папку с Arma 3 1.94, чтобы продолжить"}</p></footer>
+    <section className="update-area" aria-label="Обновление лаунчера"><div className="update-heading"><strong>Обновление лаунчера</strong><span>{update?.latest_version ? `Версия ${update.latest_version}` : `Текущая версия ${state.launcher?.version || fallback.launcher.version}`}</span></div><div className="update-meter" role="progressbar" aria-label="Ход обновления" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.max(0, Math.min(100, update?.progress || 0))}><span style={{ width: `${Math.max(0, Math.min(100, update?.progress || 0))}%` }} /></div><p role="status">{update?.message || "Проверяем обновления лаунчера…"}</p></section>
+    <footer className="launch-area"><p className="launch-status" role="status">{update?.blocking ? "Сначала завершается обязательная проверка обновления…" : notice}</p><button className="launch-button" onClick={launchGame} disabled={launching || !state.ready || update?.blocking}><FontAwesomeIcon icon={faPlay} aria-hidden="true" /><span>{launching ? "Запуск…" : "Играть"}</span></button><p className="launch-note">{gameFound ? `${state.game.name} · -world=empty` : "Укажите папку с Arma 3 1.94, чтобы продолжить"}</p></footer>
   </section></main>;
 }
+
