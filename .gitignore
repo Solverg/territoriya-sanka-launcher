@@ -10,4 +10,6 @@ design-qa.md
 # Local updater cache; never publish downloaded releases or helpers.
 .updates/
 release/
+.tools/
+build/
 

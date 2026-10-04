@@ -112,13 +112,19 @@ def check_for_update(settings: UpdateSettings, current_version: str) -> dict[str
     if settings.asset_name not in asset_names or settings.checksum_asset not in asset_names:
         return {"enabled": True, "available": False, "current_version": current_version, "latest_version": tag, "message": "В релизе нет ZIP-архива или SHA256SUMS.txt для лаунчера."}
     available = is_newer(tag, current_version)
+    if available:
+        message = "Доступна новая версия лаунчера."
+    elif is_newer(current_version, tag):
+        message = "Установлена версия новее последнего GitHub Release."
+    else:
+        message = "Установлена актуальная версия лаунчера."
     return {
         "enabled": True,
         "available": available,
         "current_version": current_version,
         "latest_version": tag,
         "release_url": str(release.get("html_url", "")),
-        "message": "Доступна новая версия лаунчера." if available else "Установлена актуальная версия лаунчера.",
+        "message": message,
     }
 
 

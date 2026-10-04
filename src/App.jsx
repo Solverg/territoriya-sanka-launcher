@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCheck, faCircleInfo, faFolderOpen, faGamepad, faMap, faPlay, faPuzzlePiece, faSatelliteDish, faTriangleExclamation, faVolumeHigh, faVolumeXmark } from "@fortawesome/free-solid-svg-icons";
 
 const launcherName = "Территория Санька: Королевская Битва";
-const fallback = { game: { name: "Arma 3 1.94", exists: false }, mods: [{ name: "Contact Fuse Drone", description: "Квадрокоптеры с контактным зарядом для всех фракций", exists: false }], maps: [], launcher: { name: launcherName, version: "1.0.2" } };
+const fallback = { game: { name: "Arma 3 1.94", exists: false }, mods: [{ name: "Contact Fuse Drone", description: "Квадрокоптеры с контактным зарядом для всех фракций", exists: false }], maps: [], launcher: { name: launcherName, version: "1.1.0" } };
 
 function PanelTitle({ icon, children, detail }) {
   return <div className="panel-title"><FontAwesomeIcon icon={icon} aria-hidden="true" /><h2>{children}</h2>{detail ? <span>{detail}</span> : null}</div>;

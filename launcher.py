@@ -16,8 +16,13 @@ from typing import Any
 
 from updater import apply_staged_update, check_for_update, read_settings, stage_update
 
-ROOT = Path(__file__).resolve().parents[2]
-HERE = Path(__file__).resolve().parent
+FROZEN = bool(getattr(sys, "frozen", False))
+# A packaged launcher runs beside its executable; the embedded read-only assets
+# live in PyInstaller's resource directory. Source runs retain the repository
+# layout used during development.
+HERE = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", HERE)) if FROZEN else HERE
+ROOT = HERE if FROZEN else Path(__file__).resolve().parents[2]
 # A public clone must not embed an owner's installation path.  The portable
 # launcher uses its validated cache, configuration, Steam, and registry routes.
 DEFAULT_GAME_DIR: Path | None = None
@@ -27,8 +32,9 @@ APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "sha
 LOCATION_CACHE_FILE = APP_DATA_DIR / "game-location.json"
 UPDATES_DIR = APP_DATA_DIR / "updates"
 SUPPORTED_GAME_VERSION = "1.94"
-LAUNCHER_VERSION = "1.0.2"
-HOST, PORT = "127.0.0.1", 8765
+LAUNCHER_VERSION = "1.1.0"
+HOST = os.environ.get("UM_LAUNCHER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("UM_LAUNCHER_PORT", "8765"))
 
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE: dict[str, Any] = {
@@ -253,7 +259,7 @@ def status() -> dict[str, Any]:
 
 class LauncherHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, directory=str(HERE / "dist" / "client"), **kwargs)
+        super().__init__(*args, directory=str(RESOURCE_DIR / "dist" / "client"), **kwargs)
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
@@ -379,7 +385,7 @@ def start_forced_update(server: ThreadingHTTPServer) -> dict[str, Any]:
 
 def main() -> int:
     no_browser = "--no-browser" in sys.argv[1:]
-    if not (HERE / "dist" / "client" / "index.html").is_file():
+    if not (RESOURCE_DIR / "dist" / "client" / "index.html").is_file():
         print("Сначала выполните: pnpm run build", file=sys.stderr)
         return 1
     find_game()  # Validate any cached directory and refresh it once per launcher start.
