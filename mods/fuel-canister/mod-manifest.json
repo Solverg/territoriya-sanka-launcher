@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "id": "umfc",
+  "version": "1.0.0",
+  "archive": "fuel-canister.zip",
+  "sha256": "ce67c1726ebb61c4f6844000e6de0d510d24923ac0f98739fc32f09c017c0df0",
+  "bytes": 5619,
+  "root": "fuel-canister"
+}
