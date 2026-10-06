@@ -8,12 +8,12 @@ import re
 import subprocess
 import sys
 import threading
-import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from mod_delivery import install_mod, read_settings as read_mod_settings
 from updater import apply_staged_update, check_for_update, read_settings, stage_update
 
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -26,15 +26,39 @@ ROOT = HERE if FROZEN else Path(__file__).resolve().parents[2]
 # A public clone must not embed an owner's installation path.  The portable
 # launcher uses its validated cache, configuration, Steam, and registry routes.
 DEFAULT_GAME_DIR: Path | None = None
-DEFAULT_MOD_BUILD_DIR = ROOT / "mods" / "arma3-contact-fuse-drone" / ".hemttout" / "build"
 CONFIG_FILE = HERE / "launcher.config.json"
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "UniversalModder" / "Arma3ContactFuseLauncher"
 LOCATION_CACHE_FILE = APP_DATA_DIR / "game-location.json"
 UPDATES_DIR = APP_DATA_DIR / "updates"
+DEFAULT_MOD_DIR = APP_DATA_DIR / "mods" / "contact-fuse-drone"
 SUPPORTED_GAME_VERSION = "1.94"
-LAUNCHER_VERSION = "1.1.0"
+LAUNCHER_VERSION = "1.3.2"
+LAUNCHER_NAME = "Территория Санька: Королевская Битва"
 HOST = os.environ.get("UM_LAUNCHER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("UM_LAUNCHER_PORT", "8765"))
+WINDOW_SIZE = (960, 640)
+WINDOW_MIN_SIZE = (900, 580)
+WINDOW_ICON = RESOURCE_DIR / "public" / "assets" / "launcher-icon.ico"
+
+MOD_SPECS: tuple[dict[str, str], ...] = (
+    {
+        "id": "umcfd",
+        "name": "Contact Fuse Drone",
+        "description": "Квадрокоптеры с контактным зарядом для всех фракций",
+        "directory": "contact-fuse-drone",
+        "manifest_path": "mods/contact-fuse-drone/mod-manifest.json",
+        "pbo": "umcfd_main.pbo",
+    },
+    {
+        "id": "umfc",
+        "name": "Канистра с топливом",
+        "description": "Подбор канистры и разовая заправка транспорта на 15%",
+        "directory": "fuel-canister",
+        "manifest_path": "mods/fuel-canister/mod-manifest.json",
+        "pbo": "umfc_main.pbo",
+    },
+)
+MODS_BY_ID = {spec["id"]: spec for spec in MOD_SPECS}
 
 UPDATE_LOCK = threading.Lock()
 UPDATE_STATE: dict[str, Any] = {
@@ -42,6 +66,15 @@ UPDATE_STATE: dict[str, Any] = {
     "progress": 0,
     "message": "Проверяем обновления лаунчера…",
     "blocking": True,
+}
+MOD_INSTALL_LOCK = threading.Lock()
+MOD_INSTALL_STATE: dict[str, dict[str, Any]] = {
+    spec["id"]: {
+        "phase": "idle",
+        "progress": 0,
+        "message": f"{spec['name']} будет проверен после выбора мода.",
+    }
+    for spec in MOD_SPECS
 }
 
 
@@ -54,6 +87,17 @@ def set_update_status(**changes: Any) -> dict[str, Any]:
     with UPDATE_LOCK:
         UPDATE_STATE.update(changes)
         return dict(UPDATE_STATE)
+
+
+def mod_install_status(mod_id: str) -> dict[str, Any]:
+    with MOD_INSTALL_LOCK:
+        return dict(MOD_INSTALL_STATE[mod_id])
+
+
+def set_mod_install_status(mod_id: str, **changes: Any) -> dict[str, Any]:
+    with MOD_INSTALL_LOCK:
+        MOD_INSTALL_STATE[mod_id].update(changes)
+        return dict(MOD_INSTALL_STATE[mod_id])
 
 
 def load_config() -> dict[str, Any]:
@@ -205,10 +249,27 @@ def candidate_game_dirs() -> list[tuple[Path, str]]:
     return candidates
 
 
-def mod_build_dir() -> Path:
-    """Use an explicit local mod build when this launcher is cloned separately."""
-    configured = load_config().get("mod_build_dir")
-    return Path(configured).expanduser() if isinstance(configured, str) and configured.strip() else DEFAULT_MOD_BUILD_DIR
+def mod_build_dir(mod_id: str = "umcfd") -> Path:
+    """Use an explicit developer override or an isolated player-managed directory."""
+    spec = MODS_BY_ID[mod_id]
+    config = load_config()
+    configured_dirs = config.get("mod_build_dirs")
+    configured = configured_dirs.get(mod_id) if isinstance(configured_dirs, dict) else None
+    # Retain the old one-mod override for existing developer configurations.
+    if not configured and mod_id == "umcfd":
+        configured = config.get("mod_build_dir")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser()
+    return APP_DATA_DIR / "mods" / spec["directory"]
+
+
+def uses_managed_mod_dir(mod_id: str = "umcfd") -> bool:
+    config = load_config()
+    configured_dirs = config.get("mod_build_dirs")
+    configured = configured_dirs.get(mod_id) if isinstance(configured_dirs, dict) else None
+    if not configured and mod_id == "umcfd":
+        configured = config.get("mod_build_dir")
+    return not isinstance(configured, str) or not configured.strip()
 
 
 def game_details(game_dir: Path) -> dict[str, Any]:
@@ -243,17 +304,37 @@ def game_is_running() -> bool:
     return "arma3_x64.exe" in result.stdout.lower()
 
 
+def build_game_command(game_executable: Path, active_mods: list[dict[str, Any]]) -> list[str]:
+    """Build Arma's single semicolon-delimited local mod argument."""
+    command = [str(game_executable)]
+    if active_mods:
+        command.append("-mod=" + ";".join(str(Path(mod["path"])) for mod in active_mods))
+    command.extend(["-world=empty", "-noSplash"])
+    return command
+
+
 def status() -> dict[str, Any]:
     game_dir, source = find_game()
     game = game_details(game_dir) if game_dir else {"path": "", "exists": False, "version": None, "compatible": False}
-    build_dir = mod_build_dir()
-    mod_ready = build_dir.is_dir() and (build_dir / "addons" / "umcfd_main.pbo").is_file()
+    mods = []
+    for spec in MOD_SPECS:
+        build_dir = mod_build_dir(spec["id"])
+        mod_ready = build_dir.is_dir() and (build_dir / "addons" / spec["pbo"]).is_file()
+        mods.append({
+            "id": spec["id"],
+            "name": spec["name"],
+            "description": spec["description"],
+            "path": str(build_dir),
+            "exists": mod_ready,
+            "managed": uses_managed_mod_dir(spec["id"]),
+            "install": mod_install_status(spec["id"]),
+        })
     return {
-        "ready": game["compatible"] and mod_ready,
+        "ready": game["compatible"] and all(mod["exists"] for mod in mods),
         "game": {"name": "Arma 3 1.94", **game, "source": source},
-        "mods": [{"id": "umcfd", "name": "Contact Fuse Drone", "description": "Квадрокоптеры с контактным зарядом для всех фракций", "path": str(build_dir), "exists": mod_ready}],
+        "mods": mods,
         "maps": [],
-        "launcher": {"name": "Территория Санька: Королевская Битва", "version": LAUNCHER_VERSION},
+        "launcher": {"name": LAUNCHER_NAME, "version": LAUNCHER_VERSION},
     }
 
 
@@ -283,7 +364,8 @@ class LauncherHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/update/start":
-            self.send_json(start_forced_update(self.server))
+            restart_launcher = getattr(self.server, "restart_launcher", self.server.shutdown)
+            self.send_json(start_forced_update(restart_launcher))
             return
         if self.path == "/api/game-path":
             try:
@@ -306,24 +388,75 @@ class LauncherHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json({"message": "Путь к Arma 3 сохранён локально.", "status": status()})
             return
+        if self.path.startswith("/api/mod/install/"):
+            self.send_json(start_mod_install(self.path.rsplit("/", 1)[-1]))
+            return
         if self.path != "/api/launch":
             self.send_json({"message": "Маршрут не найден."}, HTTPStatus.NOT_FOUND)
             return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8")) if content_length else {}
+        except (OSError, ValueError, TypeError):
+            payload = {}
+        enabled_ids = payload.get("enabled_mod_ids") if isinstance(payload, dict) else None
+        if isinstance(enabled_ids, list):
+            enabled_mod_ids = {value for value in enabled_ids if isinstance(value, str) and value in MODS_BY_ID}
+        else:
+            # Retain the previous API behaviour for existing local frontends.
+            legacy_enabled = payload.get("mod_enabled") is not False if isinstance(payload, dict) else True
+            enabled_mod_ids = set(MODS_BY_ID) if legacy_enabled else set()
         current = status()
         if not current["game"]["compatible"]:
             self.send_json({"message": "Не найдена совместимая Arma 3 1.94. Укажите папку игры в лаунчере."}, HTTPStatus.BAD_REQUEST)
             return
-        if not current["mods"][0]["exists"]:
-            self.send_json({"message": "Не найдена собранная PBO мода. Сначала выполните HEMTT build."}, HTTPStatus.BAD_REQUEST)
+        unavailable = [mod["name"] for mod in current["mods"] if mod["id"] in enabled_mod_ids and not mod["exists"]]
+        if unavailable:
+            self.send_json({"message": f"Не установлен или не прошёл проверку: {', '.join(unavailable)}. Дождитесь загрузки."}, HTTPStatus.BAD_REQUEST)
             return
         if game_is_running():
             self.send_json({"message": "Arma 3 уже запущена. Повторный запуск намеренно заблокирован."}, HTTPStatus.CONFLICT)
             return
         game_executable = Path(current["game"]["path"])
-        mod_dir = Path(current["mods"][0]["path"])
-        command = [str(game_executable), f"-mod={mod_dir}", "-world=empty", "-noSplash"]
+        active_mods = [mod for mod in current["mods"] if mod["id"] in enabled_mod_ids]
+        command = build_game_command(game_executable, active_mods)
         process = subprocess.Popen(command, cwd=str(game_executable.parent))
-        self.send_json({"message": f"Arma 3 запущена (PID {process.pid}) с «Территория Санька: Королевская Битва»."})
+        suffix = f"с модами: {', '.join(mod['name'] for mod in active_mods)}" if active_mods else "без модов"
+        self.send_json({"message": f"Arma 3 запущена (PID {process.pid}) {suffix}."})
+
+
+def start_mod_install(mod_id: str) -> dict[str, Any]:
+    """Start one verified download without touching the game directory."""
+    if mod_id not in MODS_BY_ID:
+        return {"message": "Неизвестный мод.", "status": status()}
+    spec = MODS_BY_ID[mod_id]
+    current = status()
+    mod = next(mod for mod in current["mods"] if mod["id"] == mod_id)
+    if not mod["managed"]:
+        return {"message": "Указана собственная папка мода; автоматическая загрузка для неё отключена.", "status": current}
+    with MOD_INSTALL_LOCK:
+        if MOD_INSTALL_STATE[mod_id]["phase"] == "downloading":
+            return {"message": MOD_INSTALL_STATE[mod_id]["message"], "status": current}
+        MOD_INSTALL_STATE[mod_id].update(phase="downloading", progress=1, message=f"Готовим загрузку {spec['name']}…")
+
+    def run() -> None:
+        def progress(value: int, message: str) -> None:
+            set_mod_install_status(mod_id, phase="downloading", progress=value, message=message)
+
+        try:
+            result = install_mod(
+                read_mod_settings(load_config(), spec["manifest_path"], mod_id),
+                mod_build_dir(mod_id),
+                spec["pbo"],
+                spec["name"],
+                progress,
+            )
+            set_mod_install_status(mod_id, phase="ready", progress=100, message=result["message"])
+        except ValueError as error:
+            set_mod_install_status(mod_id, phase="failed", progress=100, message=str(error))
+
+    threading.Thread(target=run, daemon=True, name=f"{spec['directory']}-download").start()
+    return {"message": f"Начата проверяемая загрузка {spec['name']}.", "status": status()}
 
 
 def begin_replacement() -> None:
@@ -342,7 +475,7 @@ def begin_replacement() -> None:
     subprocess.Popen(["cmd", "/c", str(helper)], creationflags=creationflags)
 
 
-def start_forced_update(server: ThreadingHTTPServer) -> dict[str, Any]:
+def start_forced_update(restart_launcher: Callable[[], None]) -> dict[str, Any]:
     """Check, verify, install, and restart automatically once per process."""
     with UPDATE_LOCK:
         if UPDATE_STATE["phase"] != "idle":
@@ -375,7 +508,7 @@ def start_forced_update(server: ThreadingHTTPServer) -> dict[str, Any]:
             set_update_status(phase="installing", progress=98, message="Устанавливаем обновление…", blocking=True)
             begin_replacement()
             set_update_status(phase="restarting", progress=100, message="Обновление установлено. Перезапускаем лаунчер…", blocking=True)
-            threading.Timer(0.45, server.shutdown).start()
+            threading.Timer(0.45, restart_launcher).start()
         except (OSError, ValueError, json.JSONDecodeError) as error:
             set_update_status(phase="failed", progress=100, message=f"Не удалось установить обновление: {error}.", blocking=False)
 
@@ -384,26 +517,61 @@ def start_forced_update(server: ThreadingHTTPServer) -> dict[str, Any]:
 
 
 def main() -> int:
-    no_browser = "--no-browser" in sys.argv[1:]
     if not (RESOURCE_DIR / "dist" / "client" / "index.html").is_file():
         print("Сначала выполните: pnpm run build", file=sys.stderr)
+        return 1
+    try:
+        import webview
+    except ImportError:
+        print(
+            "Не найден pywebview. Для разработки установите зависимости сборки, "
+            "а для игроков используйте TerritorySanyokLauncher.exe.",
+            file=sys.stderr,
+        )
         return 1
     find_game()  # Validate any cached directory and refresh it once per launcher start.
     server = ThreadingHTTPServer((HOST, PORT), LauncherHandler)
     url = f"http://{HOST}:{PORT}"
-    print(f"Лаунчер доступен по адресу {url}")
-    if not no_browser:
-        webbrowser.open(url)
-    start_forced_update(server)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="launcher-local-api")
+    server_thread.start()
+    print("Открываем локальное окно лаунчера.")
     try:
-        server.serve_forever()
+        window = webview.create_window(
+            LAUNCHER_NAME,
+            url,
+            width=WINDOW_SIZE[0],
+            height=WINDOW_SIZE[1],
+            min_size=WINDOW_MIN_SIZE,
+            background_color="#101820",
+        )
+        if window is None:
+            raise RuntimeError("WebView2 не создал окно лаунчера.")
+
+        def restart_launcher() -> None:
+            """Close only this local window and server after a verified launcher update."""
+            server.shutdown()
+            window.destroy()
+
+        server.restart_launcher = restart_launcher
+        # The UI is rendered by the embedded Windows WebView2 runtime. The
+        # loopback server remains an internal API, not a browser tab.
+        webview.start(
+            start_forced_update,
+            (restart_launcher,),
+            gui="edgechromium",
+            icon=str(WINDOW_ICON) if WINDOW_ICON.is_file() else None,
+        )
     except KeyboardInterrupt:
         pass
+    except Exception as error:
+        print(f"Не удалось открыть локальное окно WebView2: {error}", file=sys.stderr)
+        return 1
     finally:
+        server.shutdown()
+        server_thread.join(timeout=2)
         server.server_close()
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
