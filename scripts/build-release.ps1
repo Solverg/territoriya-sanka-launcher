@@ -21,6 +21,7 @@ $items = @(
     ".gitignore",
     "README.md",
     "launcher.py",
+    "mod_delivery.py",
     "updater.py",
     "run-launcher.cmd",
     "launcher.config.example.json",
@@ -44,4 +45,3 @@ Compress-Archive -LiteralPath $stage -DestinationPath $archive
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
 Set-Content -LiteralPath (Join-Path $output "SHA256SUMS.txt") -Value "$hash *$archiveName" -NoNewline
 Write-Output $archive
-

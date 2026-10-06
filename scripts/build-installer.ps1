@@ -25,4 +25,3 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup завершился с кодом $LASTEXITCODE."
 }
 Write-Output (Join-Path $release ("TerritorySanyokLauncher-Setup-" + $Version + ".exe"))
-
