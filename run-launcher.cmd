@@ -6,4 +6,3 @@ if exist "%~dp0TerritorySanyokLauncher.exe" (
 )
 python "%~dp0launcher.py"
 if errorlevel 1 pause
-

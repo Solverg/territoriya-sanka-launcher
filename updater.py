@@ -219,7 +219,7 @@ def apply_staged_update(updates_dir: Path) -> Path:
                 raise ValueError("ZIP-архив должен содержать единственную папку launcher/.")
             archive.extractall(temporary)
         source = temporary / "launcher"
-        if not (source / "launcher.py").is_file() or not (source / "run-launcher.cmd").is_file() or not (source / "dist" / "client" / "index.html").is_file():
+        if not (source / "TerritorySanyokLauncher.exe").is_file() or not (source / "launcher.py").is_file() or not (source / "run-launcher.cmd").is_file() or not (source / "dist" / "client" / "index.html").is_file():
             raise ValueError("В обновлении отсутствуют обязательные файлы лаунчера.")
         destination = updates_dir / "pending-install"
         if destination.exists():
@@ -228,4 +228,3 @@ def apply_staged_update(updates_dir: Path) -> Path:
         return destination
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
-
