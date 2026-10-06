@@ -44,6 +44,7 @@ class UpdaterTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as bundle:
                 bundle.writestr("launcher/launcher.py", "print('ok')")
                 bundle.writestr("launcher/run-launcher.cmd", "@echo off")
+                bundle.writestr("launcher/TerritorySanyokLauncher.exe", "placeholder")
                 bundle.writestr("launcher/dist/client/index.html", "<!doctype html>")
             archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
             (version / "update.json").write_text(json.dumps({"archive": archive.name, "sha256": archive_hash}), encoding="utf-8")
@@ -52,4 +53,3 @@ class UpdaterTests(unittest.TestCase):
 
             self.assertTrue((pending / "launcher.py").is_file())
             self.assertTrue((pending / "dist" / "client" / "index.html").is_file())
-
