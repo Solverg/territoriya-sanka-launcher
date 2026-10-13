@@ -1,6 +1,6 @@
 {
   "name": "territoriya-sanka-launcher",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,3 +19,4 @@
     "vite": "6.4.2"
   }
 }
+

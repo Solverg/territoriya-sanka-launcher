@@ -31,13 +31,13 @@ APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "sha
 LOCATION_CACHE_FILE = APP_DATA_DIR / "game-location.json"
 UPDATES_DIR = APP_DATA_DIR / "updates"
 DEFAULT_MOD_DIR = APP_DATA_DIR / "mods" / "contact-fuse-drone"
-SUPPORTED_GAME_VERSION = "1.94"
-LAUNCHER_VERSION = "1.3.2"
+LAUNCHER_VERSION = "1.3.3"
 LAUNCHER_NAME = "Территория Санька: Королевская Битва"
 HOST = os.environ.get("UM_LAUNCHER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("UM_LAUNCHER_PORT", "8765"))
-WINDOW_SIZE = (960, 640)
-WINDOW_MIN_SIZE = (900, 580)
+PREFERRED_WINDOW_SIZE = (960, 640)
+WINDOW_MIN_SIZE = (520, 480)
+WINDOW_FRAME_PADDING = (24, 48)
 WINDOW_ICON = RESOURCE_DIR / "public" / "assets" / "launcher-icon.ico"
 
 MOD_SPECS: tuple[dict[str, str], ...] = (
@@ -139,7 +139,41 @@ def save_location_cache(game_dir: Path, source: str) -> bool:
 
 
 def executable_in(game_dir: Path) -> Path:
+    """Choose a real Arma executable; never infer compatibility from a version."""
+    for name in ("arma3_x64.exe", "arma3.exe"):
+        executable = game_dir / name
+        if executable.is_file():
+            return executable
+    # Retain a useful expected path in a missing-install diagnostic.
     return game_dir / "arma3_x64.exe"
+
+
+def adaptive_window_geometry(work_area: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Fit the initial launcher size and its resize floor to the usable desktop."""
+    available_width = max(1, work_area[0] - WINDOW_FRAME_PADDING[0])
+    available_height = max(1, work_area[1] - WINDOW_FRAME_PADDING[1])
+    size = (
+        min(PREFERRED_WINDOW_SIZE[0], available_width),
+        min(PREFERRED_WINDOW_SIZE[1], available_height),
+    )
+    minimum = (min(WINDOW_MIN_SIZE[0], size[0]), min(WINDOW_MIN_SIZE[1], size[1]))
+    return size, minimum
+
+
+def desktop_work_area() -> tuple[int, int]:
+    """Return usable screen dimensions without changing display settings."""
+    if os.name != "nt":
+        return PREFERRED_WINDOW_SIZE
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rectangle = wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rectangle), 0):  # SPI_GETWORKAREA
+            return max(1, rectangle.right - rectangle.left), max(1, rectangle.bottom - rectangle.top)
+    except (AttributeError, OSError):
+        pass
+    return PREFERRED_WINDOW_SIZE
 
 
 def file_version(executable: Path) -> str | None:
@@ -209,6 +243,29 @@ def steam_library_dirs(steam_root: Path) -> list[Path]:
     return libraries
 
 
+def steam_game_dirs(steam_root: Path) -> list[Path]:
+    """Read Arma 3's Steam manifest instead of assuming its folder name.
+
+    Steam lets players rename an install folder, and the manifest is the
+    authoritative link between app 107410 and its ``installdir``.  Keep the
+    conventional path as a last-resort fallback for older or damaged installs.
+    """
+    found: list[Path] = []
+    for library in steam_library_dirs(steam_root):
+        manifest = library / "steamapps" / "appmanifest_107410.acf"
+        try:
+            contents = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            contents = ""
+        install_dir = re.search(r'"installdir"\s+"((?:\\.|[^"\\])*)"', contents, re.IGNORECASE)
+        if install_dir:
+            # Steam escapes literal backslashes in KeyValues files.  The value
+            # is a directory name, so no further interpretation is needed.
+            found.append(library / "steamapps" / "common" / install_dir.group(1).replace("\\\\", "\\"))
+        found.append(library / "steamapps" / "common" / "Arma 3")
+    return found
+
+
 def registry_game_dirs() -> list[Path]:
     if os.name != "nt":
         return []
@@ -245,7 +302,7 @@ def candidate_game_dirs() -> list[tuple[Path, str]]:
         candidates.append((DEFAULT_GAME_DIR, "стандартная папка"))
     candidates.extend((directory, "реестр Bohemia") for directory in registry_game_dirs())
     for steam_root in steam_roots():
-        candidates.extend((library / "steamapps" / "common" / "Arma 3", "библиотека Steam") for library in steam_library_dirs(steam_root))
+        candidates.extend((directory, "манифест Steam") for directory in steam_game_dirs(steam_root))
     return candidates
 
 
@@ -276,7 +333,9 @@ def game_details(game_dir: Path) -> dict[str, Any]:
     executable = executable_in(game_dir)
     exists = executable.is_file()
     version = file_version(executable) if exists else None
-    compatible = exists and version == SUPPORTED_GAME_VERSION
+    # A present Arma executable is the source of truth. Steam metadata and a
+    # particular Arma release must not hide a locally installed game.
+    compatible = exists
     return {"path": str(executable), "exists": exists, "version": version, "compatible": compatible}
 
 
@@ -297,11 +356,14 @@ def game_is_running() -> bool:
     """Read the exact process name; never terminates or modifies a process."""
     if os.name != "nt":
         return False
-    result = subprocess.run(
-        ["tasklist", "/FI", "IMAGENAME eq arma3_x64.exe", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    return "arma3_x64.exe" in result.stdout.lower()
+    for executable_name in ("arma3_x64.exe", "arma3.exe"):
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {executable_name}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if executable_name in result.stdout.lower():
+            return True
+    return False
 
 
 def build_game_command(game_executable: Path, active_mods: list[dict[str, Any]]) -> list[str]:
@@ -331,7 +393,7 @@ def status() -> dict[str, Any]:
         })
     return {
         "ready": game["compatible"] and all(mod["exists"] for mod in mods),
-        "game": {"name": "Arma 3 1.94", **game, "source": source},
+        "game": {"name": "Arma 3", **game, "source": source},
         "mods": mods,
         "maps": [],
         "launcher": {"name": LAUNCHER_NAME, "version": LAUNCHER_VERSION},
@@ -377,11 +439,7 @@ class LauncherHandler(SimpleHTTPRequestHandler):
                 return
             details = game_details(game_dir)
             if not details["exists"]:
-                self.send_json({"message": "В этой папке не найден arma3_x64.exe."}, HTTPStatus.BAD_REQUEST)
-                return
-            if not details["compatible"]:
-                version = details["version"] or "неизвестной версии"
-                self.send_json({"message": f"Найдена Arma 3 {version}; требуется версия {SUPPORTED_GAME_VERSION}."}, HTTPStatus.BAD_REQUEST)
+                self.send_json({"message": "В этой папке не найден arma3_x64.exe или arma3.exe."}, HTTPStatus.BAD_REQUEST)
                 return
             if not save_location_cache(game_dir, "указано игроком"):
                 self.send_json({"message": "Не удалось записать локальный кэш пути."}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -408,7 +466,7 @@ class LauncherHandler(SimpleHTTPRequestHandler):
             enabled_mod_ids = set(MODS_BY_ID) if legacy_enabled else set()
         current = status()
         if not current["game"]["compatible"]:
-            self.send_json({"message": "Не найдена совместимая Arma 3 1.94. Укажите папку игры в лаунчере."}, HTTPStatus.BAD_REQUEST)
+            self.send_json({"message": "Не найден arma3_x64.exe или arma3.exe. Укажите папку игры в лаунчере."}, HTTPStatus.BAD_REQUEST)
             return
         unavailable = [mod["name"] for mod in current["mods"] if mod["id"] in enabled_mod_ids and not mod["exists"]]
         if unavailable:
@@ -530,6 +588,7 @@ def main() -> int:
         )
         return 1
     find_game()  # Validate any cached directory and refresh it once per launcher start.
+    window_size, window_min_size = adaptive_window_geometry(desktop_work_area())
     server = ThreadingHTTPServer((HOST, PORT), LauncherHandler)
     url = f"http://{HOST}:{PORT}"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="launcher-local-api")
@@ -539,9 +598,9 @@ def main() -> int:
         window = webview.create_window(
             LAUNCHER_NAME,
             url,
-            width=WINDOW_SIZE[0],
-            height=WINDOW_SIZE[1],
-            min_size=WINDOW_MIN_SIZE,
+            width=window_size[0],
+            height=window_size[1],
+            min_size=window_min_size,
             background_color="#101820",
         )
         if window is None:
@@ -575,3 +634,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

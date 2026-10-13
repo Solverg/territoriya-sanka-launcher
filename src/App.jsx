@@ -7,7 +7,7 @@ const fallbackMods = [
   { id: "umcfd", name: "Contact Fuse Drone", description: "Квадрокоптеры с контактным зарядом для всех фракций", exists: false, managed: true, install: { phase: "idle", progress: 0 } },
   { id: "umfc", name: "Канистра с топливом", description: "Подбор канистры и разовая заправка транспорта на 15%", exists: false, managed: true, install: { phase: "idle", progress: 0 } },
 ];
-const fallback = { game: { name: "Arma 3 1.94", exists: false }, mods: fallbackMods, maps: [], launcher: { name: launcherName, version: "1.3.2" } };
+const fallback = { game: { name: "Arma 3", exists: false }, mods: fallbackMods, maps: [], launcher: { name: launcherName, version: "1.3.3" } };
 
 function PanelTitle({ icon, children, detail }) {
   return <div className="panel-title"><FontAwesomeIcon icon={icon} aria-hidden="true" /><h2>{children}</h2>{detail ? <span>{detail}</span> : null}</div>;
@@ -111,14 +111,14 @@ export function App() {
   return <main className="app-shell"><section className="launcher" aria-label={`Лаунчер ${launcherName}`}>
     <audio ref={soundtrack} src="/assets/sanyok-soundtrack.mp3" autoPlay loop preload="auto" />
     <header className="hero"><img src="/assets/battlefield-dusk-hero.png" alt="Солдат с парашютом над побережьем на закате" />
-      <div className="hero-brand"><div className="brand-kicker">ЛОКАЛЬНЫЙ ЛАУНЧЕР</div><div className="brand-name">ТЕРРИТОРИЯ<br />САНЬКА</div><div className="brand-subtitle">КОРОЛЕВСКАЯ БИТВА · ARMA 3 · GITHUB DELIVERY</div></div>
+      <div className="hero-brand"><div className="brand-kicker">ЛОКАЛЬНЫЙ ЛАУНЧЕР</div><div className="brand-name">ТЕРРИТОРИЯ<br />САНЬКА</div><div className="brand-subtitle">КОРОЛЕВСКАЯ БИТВА · ARMA 3 · ЛОКАЛЬНЫЙ РЕЖИМ</div></div>
       <button className={`sound-toggle ${soundMuted ? "muted" : ""}`} type="button" onClick={toggleSound} aria-label={soundMuted ? "Включить фоновую музыку" : "Выключить фоновую музыку"} title={soundMuted ? "Включить музыку" : "Выключить музыку"}><FontAwesomeIcon icon={soundMuted ? faVolumeXmark : faVolumeHigh} aria-hidden="true" /></button>
       <div className="hero-status"><FontAwesomeIcon icon={faSatelliteDish} aria-hidden="true" /><span>ДВА МОДА · БЕЗ КАРТ</span></div>
     </header>
     <div className="content-grid">
       <section className="panel game-panel" aria-label="Игра">
-        <PanelTitle icon={faGamepad} detail={gameFound ? `v${state.game.version}` : "требуется v1.94"}>Игра</PanelTitle>
-        <div className="game-row"><div className={`game-indicator ${gameFound ? "found" : "not-found"}`} aria-label={gameFound ? "Arma 3 найдена" : "Arma 3 не найдена"}><FontAwesomeIcon icon={gameFound ? faCheck : faTriangleExclamation} aria-hidden="true" /></div><div className="game-copy"><strong>Arma 3</strong><span>{gameFound ? `Найдена · ${state.game.source || "локальный кэш"}` : "Не найдена совместимая копия игры"}</span>{gameFound ? <code>{state.game.path}</code> : null}</div><div className={`availability ${gameFound ? "available" : "missing"}`}>{gameFound ? "Найдена" : "Не найдена"}</div></div>
+        <PanelTitle icon={faGamepad} detail={gameFound ? (state.game.version ? `v${state.game.version}` : "exe найден") : "ищем exe"}>Игра</PanelTitle>
+        <div className="game-row"><div className={`game-indicator ${gameFound ? "found" : "not-found"}`} aria-label={gameFound ? "Arma 3 найдена" : "Arma 3 не найдена"}><FontAwesomeIcon icon={gameFound ? faCheck : faTriangleExclamation} aria-hidden="true" /></div><div className="game-copy"><strong>Arma 3</strong><span>{gameFound ? `Найдена · ${state.game.source || "локальный кэш"}` : "Не найден arma3_x64.exe или arma3.exe"}</span>{gameFound ? <code>{state.game.path}</code> : null}</div><div className={`availability ${gameFound ? "available" : "missing"}`}>{gameFound ? "Найдена" : "Не найдена"}</div></div>
         <form className="game-path-form" onSubmit={saveGamePath}><label htmlFor="game-dir"><FontAwesomeIcon icon={faFolderOpen} aria-hidden="true" />Папка с Arma 3</label><div><input id="game-dir" value={gameDir} onChange={(event) => setGameDir(event.target.value)} placeholder="Например: D:\\SteamLibrary\\steamapps\\common\\Arma 3" /><button type="submit" disabled={savingPath || !gameDir.trim()}>{savingPath ? "Проверяем…" : "Указать путь"}</button></div><p>При каждом открытии лаунчер проверяет сохранённую папку. Если игра перенесена — ищет её заново.</p></form>
       </section>
       <section className="panel mods-panel" aria-label="Моды"><PanelTitle icon={faPuzzlePiece} detail={`(${mods.length})`}>Моды</PanelTitle>
@@ -130,6 +130,7 @@ export function App() {
       <section className="panel maps-panel" aria-label="Карты"><PanelTitle icon={faMap} detail="(0)">Карты</PanelTitle><div className="tile-scroll maps-scroll"><div className="empty-maps"><FontAwesomeIcon icon={faMap} aria-hidden="true" /><strong>Карты пока не подключены</strong><span>Поле намеренно оставлено пустым.</span></div></div></section>
     </div>
     <section className="update-area" aria-label="Обновление лаунчера"><div className="update-heading"><strong>Обновление лаунчера</strong><span>{update?.latest_version ? `Версия ${update.latest_version}` : `Текущая версия ${state.launcher?.version || fallback.launcher.version}`}</span></div><div className="update-meter" role="progressbar" aria-label="Ход обновления" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.max(0, Math.min(100, update?.progress || 0))}><span style={{ width: `${Math.max(0, Math.min(100, update?.progress || 0))}%` }} /></div><p role="status">{update?.message || "Проверяем обновления лаунчера…"}</p></section>
-    <footer className="launch-area"><p className="launch-status" role="status">{update?.blocking ? "Сначала завершается обязательная проверка обновления…" : modInstalling ? mods.find(isModInstalling)?.install?.message : notice}</p><button className="launch-button" onClick={launchGame} disabled={launching || !canLaunch}><FontAwesomeIcon icon={faPlay} aria-hidden="true" /><span>{launching ? "Запуск…" : "Играть"}</span></button><p className="launch-note">{gameFound ? `${state.game.name} · ${enabledNames.length ? enabledNames.join(" + ").toUpperCase() : "БЕЗ МОДОВ"} · -world=empty` : "Укажите папку с Arma 3 1.94, чтобы продолжить"}</p></footer>
+    <footer className="launch-area"><p className="launch-status" role="status">{update?.blocking ? "Сначала завершается обязательная проверка обновления…" : modInstalling ? mods.find(isModInstalling)?.install?.message : notice}</p><button className="launch-button" onClick={launchGame} disabled={launching || !canLaunch}><FontAwesomeIcon icon={faPlay} aria-hidden="true" /><span>{launching ? "Запуск…" : "Играть"}</span></button><p className="launch-note">{gameFound ? `${state.game.name} · ${enabledNames.length ? enabledNames.join(" + ").toUpperCase() : "БЕЗ МОДОВ"} · -world=empty` : "Укажите папку с Arma 3, чтобы продолжить"}</p></footer>
   </section></main>;
 }
+

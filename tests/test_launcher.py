@@ -9,6 +9,38 @@ import launcher
 
 
 class LauncherConfigurationTests(unittest.TestCase):
+    def test_game_details_accepts_either_arma_executable_without_a_version_gate(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            game_dir = Path(temporary)
+            (game_dir / "arma3.exe").touch()
+            details = launcher.game_details(game_dir)
+
+        self.assertTrue(details["exists"])
+        self.assertTrue(details["compatible"])
+        self.assertTrue(details["path"].endswith("arma3.exe"))
+
+    def test_steam_manifest_finds_a_renamed_arma_install_folder(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            steam = Path(temporary) / "Steam"
+            library = Path(temporary) / "Games"
+            (steam / "steamapps").mkdir(parents=True)
+            (library / "steamapps" / "common" / "Arma 3 — Custom").mkdir(parents=True)
+            (steam / "steamapps" / "libraryfolders.vdf").write_text(
+                '"libraryfolders" { "0" { "path" "' + str(library).replace("\\", "\\\\") + '" } }',
+                encoding="utf-8",
+            )
+            (library / "steamapps" / "appmanifest_107410.acf").write_text(
+                '"AppState" { "appid" "107410" "installdir" "Arma 3 — Custom" }', encoding="utf-8",
+            )
+            with patch("launcher.steam_roots", return_value=[steam]):
+                candidates = launcher.candidate_game_dirs()
+
+        self.assertIn((library / "steamapps" / "common" / "Arma 3 — Custom", "манифест Steam"), candidates)
+
     def test_explicit_mod_build_directory_overrides_managed_default(self):
         with patch("launcher.load_config", return_value={"mod_build_dir": "example-mod-build"}):
             self.assertEqual(launcher.mod_build_dir(), Path("example-mod-build"))
@@ -39,10 +71,11 @@ class LauncherConfigurationTests(unittest.TestCase):
             ],
         )
 
-    def test_embedded_window_has_a_local_launcher_title_and_safe_minimum_size(self):
+    def test_embedded_window_adapts_to_the_usable_screen_size(self):
         self.assertEqual(launcher.LAUNCHER_NAME, "Территория Санька: Королевская Битва")
-        self.assertEqual(launcher.WINDOW_SIZE, (960, 640))
-        self.assertEqual(launcher.WINDOW_MIN_SIZE, (900, 580))
+        self.assertEqual(launcher.adaptive_window_geometry((1920, 1080)), ((960, 640), (520, 480)))
+        self.assertEqual(launcher.adaptive_window_geometry((800, 600)), ((776, 552), (520, 480)))
+        self.assertEqual(launcher.adaptive_window_geometry((400, 300)), ((376, 252), (376, 252)))
         self.assertEqual(launcher.WINDOW_ICON.name, "launcher-icon.ico")
 
     def test_compact_layout_keeps_page_fixed_and_scrolls_only_tile_content(self):
@@ -54,3 +87,7 @@ class LauncherConfigurationTests(unittest.TestCase):
         self.assertIn(".tile-scroll { flex: 1 1 auto; min-height: 0; margin-top: 7px; overflow-y: auto;", styles)
         self.assertIn('className="tile-scroll mods-scroll"', app)
         self.assertIn('className="tile-scroll maps-scroll"', app)
+        self.assertIn("ЛОКАЛЬНЫЙ РЕЖИМ", app)
+        self.assertNotIn("GITHUB DELIVERY", app)
+        self.assertIn("@media (max-width: 599px)", styles)
+

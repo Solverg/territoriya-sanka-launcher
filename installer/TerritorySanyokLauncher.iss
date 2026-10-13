@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.3.2"
+  #define AppVersion "1.3.3"
 #endif
 
 #define AppId "{{765751C7-5E74-44C4-9A9A-EE6BCA3ED1B4}"
@@ -132,3 +132,4 @@ begin
       'Версия {#AppVersion} уже установлена. Установщик проверит и восстановит файлы лаунчера в той же папке.',
       mbInformation, MB_OK);
 end;
+
