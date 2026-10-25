@@ -1,9 +1,9 @@
 {
   "format": 1,
   "id": "umcfd",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "archive": "contact-fuse-drone.zip",
-  "sha256": "befcf6c92875cdd35d0a60e7efda5426586507f49f926d770007fcab76235be4",
-  "bytes": 5919,
+  "sha256": "d3ec81e5611c4aa5a93cfb0ed57128490764b75be77fa5c1ecde33399db2c4f2",
+  "bytes": 7385,
   "root": "contact-fuse-drone"
 }
