@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -105,12 +106,21 @@ def read_settings(
     )
 
 
-def _raw_url(settings: ModDeliverySettings, path: str) -> str:
-    return f"https://raw.githubusercontent.com/{settings.repository}/{settings.ref}/{path}"
+def _github_content_url(settings: ModDeliverySettings, path: str) -> str:
+    """Use GitHub's content API to avoid stale raw-CDN package responses."""
+    safe_path = urllib.parse.quote(path, safe="/")
+    ref_query = urllib.parse.urlencode({"ref": settings.ref})
+    return f"https://api.github.com/repos/{settings.repository}/contents/{safe_path}?{ref_query}"
 
 
 def _request(url: str, on_progress: Callable[[float], None] | None = None) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "Territory-Sanyok-Launcher", "Accept": "application/octet-stream"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Territory-Sanyok-Launcher",
+            "Accept": "application/vnd.github.raw+json",
+        },
+    )
     with urllib.request.urlopen(request, timeout=20) as response:
         content_length = response.length
         if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
@@ -194,14 +204,14 @@ def install_mod(
 
     progress(5, f"Проверяем версию {display_name}…")
     try:
-        manifest = _manifest(_request(_raw_url(settings, settings.manifest_path)))
+        manifest = _manifest(_request(_github_content_url(settings, settings.manifest_path)))
         if _matches_installed_package(destination, manifest, required_pbo):
             progress(100, f"{display_name} уже актуален (v{manifest.version}).")
             return {"version": manifest.version, "message": f"{display_name} уже актуален (v{manifest.version})."}
         manifest_folder = str(Path(settings.manifest_path).parent).replace("\\", "/")
         progress(12, f"Скачиваем {display_name}…")
         archive_data = _request(
-            _raw_url(settings, f"{manifest_folder}/{manifest.archive}"),
+            _github_content_url(settings, f"{manifest_folder}/{manifest.archive}"),
             lambda fraction: progress(12 + int(fraction * 72), f"Скачиваем {display_name}… {int(fraction * 100)}%"),
         )
         if len(archive_data) != manifest.bytes:
@@ -237,3 +247,4 @@ def install_mod(
         return {"version": manifest.version, "message": f"{display_name} v{manifest.version} установлен и готов."}
     except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError, zipfile.BadZipFile) as error:
         raise ValueError(f"Не удалось установить мод: {error}.") from error
+

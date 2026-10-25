@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mod_delivery import install_mod, read_settings
+from mod_delivery import _github_content_url, install_mod, read_settings
 
 
 def archive_bytes(root: str = "contact-fuse-drone", pbo: str = "umcfd_main.pbo") -> bytes:
@@ -32,6 +32,17 @@ def manifest_bytes(bundle: bytes, archive: str = "contact-fuse-drone.zip", root:
 
 
 class ModDeliveryTests(unittest.TestCase):
+    def test_github_content_url_uses_api_and_encoded_ref(self):
+        settings = read_settings(
+            {"mod_sources": {"umcfd": {"ref": "release/1.2"}}},
+            "mods/contact-fuse-drone/mod-manifest.json",
+        )
+        self.assertEqual(
+            _github_content_url(settings, "mods/contact-fuse-drone/mod-manifest.json"),
+            "https://api.github.com/repos/Solverg/territoriya-sanka-launcher/contents/"
+            "mods/contact-fuse-drone/mod-manifest.json?ref=release%2F1.2",
+        )
+
     def test_defaults_use_the_public_mod_folder(self):
         settings = read_settings({}, "mods/contact-fuse-drone/mod-manifest.json")
         self.assertTrue(settings.enabled)
@@ -106,3 +117,4 @@ class ModDeliveryTests(unittest.TestCase):
             receipt = json.loads((destination.parent / ".contact-fuse-drone-package.json").read_text(encoding="utf-8"))
             self.assertEqual(receipt["version"], "1.1.0")
             self.assertEqual(receipt["archive_sha256"], hashlib.sha256(bundle).hexdigest())
+
